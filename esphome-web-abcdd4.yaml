@@ -72,6 +72,7 @@ text_sensor:
 
 sensor:
   # --- Background ADC Sampling (Internal) ---
+  # These sample every 10s to build a stable moving average[cite: 1, 2]
   - platform: adc
     pin: GPIO34
     id: batt_12v_raw
@@ -96,7 +97,7 @@ sensor:
           window_size: 6
           send_every: 1
 
-  # --- Public Sensors (Updated by Slider) ---
+  # --- Public Sensors (Updated via script) ---
   - platform: template
     name: "12V System Voltage"
     id: batt_12v
@@ -108,12 +109,19 @@ sensor:
     on_value:
       then:
         - if:
+            # SHUTDOWN: Triggered at 11.1V[cite: 1, 2]
             condition:
               lambda: 'return x < 11.1;' 
             then:
               - switch.turn_off: GHSw1 
               - switch.turn_off: GHSw2
-              - logger.log: "CRITICAL: 12V Battery Low"
+              - logger.log: "CRITICAL: 12V Battery Low (< 11.1V). Load Shedding Active."
+        - if:
+            # HYSTERESIS RECOVERY: Logic considered "Safe" only when voltage recovers
+            condition:
+              lambda: 'return x > 12.2;' 
+            then:
+              - logger.log: "INFO: 12V Battery recovered above 12.2V."
 
   - platform: template
     name: "Controller Battery Voltage"
@@ -126,12 +134,19 @@ sensor:
     on_value:
       then:
         - if:
+            # SHUTDOWN: Triggered at 3.8V[cite: 1, 2]
             condition:
               lambda: 'return x < 3.8;' 
             then:
               - switch.turn_off: GHSw1
               - switch.turn_off: GHSw2
-              - logger.log: "CRITICAL: Controller Battery Low"
+              - logger.log: "CRITICAL: Controller Battery Low (< 3.8V)."
+        - if:
+            # HYSTERESIS RECOVERY
+            condition:
+              lambda: 'return x > 4.0;' 
+            then:
+              - logger.log: "INFO: Controller Battery recovered above 4.0V."
 
   - platform: internal_temperature
     name: "Greenhouse Controller Internal Temp"
@@ -178,7 +193,7 @@ script:
           condition:
             lambda: 'return true;'
           then:
-            # Refresh all snapshot sensors
+            # Manually refresh sensors for the UI[cite: 1]
             - component.update: batt_12v
             - component.update: batt_ctrl
             - component.update: internal_temp
@@ -186,4 +201,5 @@ script:
             - component.update: temp_sensor_1
             - component.update: temp_sensor_2
             - logger.log: "Greenhouse sensors updated via loop."
+            # Delay based on the 'Update Interval' slider[cite: 1, 2]
             - delay: !lambda 'return id(temp_interval).state * 60000;'
