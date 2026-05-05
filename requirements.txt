@@ -1,0 +1,8 @@
+# Python environment requirements for ESPHome
+esphome==2025.7.0
+pillow>=10.0.0
+tornado==6.3.3
+
+# Required for ESP-IDF framework support and ADC calibration
+platformio>=6.1.11
+# Minimum ESP-IDF version 5.0+ recommended for internal_temperature sensor
