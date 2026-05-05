@@ -4,102 +4,36 @@ esphome:
   on_boot:
     priority: -10
     then:
-      - delay: 10s
-      # The staggered start: increase power only after system stabilizes
+      - delay: 15s
       - script.execute: sensor_loop
 
 esp32:
   board: esp32dev
   framework:
-    type: arduino
+    type: esp-idf
     advanced:
       sram1_as_iram: true
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  
-  # Connection optimizations to prevent brownouts
   fast_connect: true
   power_save_mode: light
-  output_power: 17.0dBm # Balanced for -79dBm signal
-  
-  # Static IP cuts radio "on-time" during boot by seconds
-  # manual_ip:
-  #  static_ip: 10.0.8.200
-  #  gateway: 10.0.8.1
-  #  subnet: 255.255.255.0
-
-  # Prevents infinite reboot loops if WiFi is lost
+  output_power: 17.0dBm
   reboot_timeout: 15min
 
-sensor:
-  # 12V Battery Monitoring (3S Li-ion)
-  - platform: adc
-    pin: GPIO34
-    name: "12V System Voltage"
-    id: batt_12v
-    update_interval: 60s
-    attenuation: 12db
-    filters:
-      - multiply: 5.545
-      - sliding_window_moving_average:
-          window_size: 10
-          send_every: 1
-    on_value:
-      then:
-        - if:
-            condition:
-              lambda: 'return x < 11.1;' 
-            then:
-              - switch.turn_off: GHSw1 
-              - switch.turn_off: GHSw2
-              - logger.log: "CRITICAL: 12V Battery Low"
+api:
+  encryption:
+    key: !secret api_encryption_key
 
-  # 1-Cell Controller Battery Monitoring
-  - platform: adc
-    pin: GPIO35
-    name: "Controller Battery Voltage"
-    id: batt_ctrl
-    update_interval: 60s
-    attenuation: 12db
-    filters:
-      - multiply: 2.0
-      - sliding_window_moving_average:
-          window_size: 10
-          send_every: 1
-    on_value:
-      then:
-        - if:
-            condition:
-              lambda: 'return x < 3.8;' 
-            then:
-              - switch.turn_off: GHSw1
-              - switch.turn_off: GHSw2
-              - logger.log: "CRITICAL: Controller Battery Low"
+ota:
+  - platform: esphome
 
-  # Health and Environment Metrics
-  - platform: wifi_signal
-    name: "Greenhouse WiFi Signal"
-    id: wifi_rssi
-    update_interval: 60s
+logger:
 
-  - platform: uptime
-    name: "Greenhouse Uptime"
-
-  - platform: internal_temperature
-    name: "ESP32 Internal Temp"
-
-  - platform: dallas_temp
-    name: "Greenhouse Temp 1"
-    index: 0
-    id: temp_sensor_1
-    update_interval: never
-  - platform: dallas_temp
-    name: "Greenhouse Temp 2"
-    index: 1
-    id: temp_sensor_2
-    update_interval: never
+web_server:
+  port: 80
+  version: 2
 
 # Infrastructure
 time:
@@ -136,6 +70,94 @@ text_sensor:
     lambda: |-
       return id(sntp_time).now().strftime("%H:%M");
 
+sensor:
+  # --- Background ADC Sampling (Internal) ---
+  - platform: adc
+    pin: GPIO34
+    id: batt_12v_raw
+    internal: true
+    update_interval: 10s
+    attenuation: 12db
+    filters:
+      - multiply: 5.545
+      - sliding_window_moving_average:
+          window_size: 6
+          send_every: 1
+
+  - platform: adc
+    pin: GPIO35
+    id: batt_ctrl_raw
+    internal: true
+    update_interval: 10s
+    attenuation: 12db
+    filters:
+      - multiply: 2.0
+      - sliding_window_moving_average:
+          window_size: 6
+          send_every: 1
+
+  # --- Public Sensors (Updated by Slider) ---
+  - platform: template
+    name: "12V System Voltage"
+    id: batt_12v
+    unit_of_measurement: "V"
+    device_class: "voltage"
+    state_class: "measurement"
+    update_interval: never
+    lambda: 'return id(batt_12v_raw).state;'
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return x < 11.1;' 
+            then:
+              - switch.turn_off: GHSw1 
+              - switch.turn_off: GHSw2
+              - logger.log: "CRITICAL: 12V Battery Low"
+
+  - platform: template
+    name: "Controller Battery Voltage"
+    id: batt_ctrl
+    unit_of_measurement: "V"
+    device_class: "voltage"
+    state_class: "measurement"
+    update_interval: never
+    lambda: 'return id(batt_ctrl_raw).state;'
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return x < 3.8;' 
+            then:
+              - switch.turn_off: GHSw1
+              - switch.turn_off: GHSw2
+              - logger.log: "CRITICAL: Controller Battery Low"
+
+  - platform: internal_temperature
+    name: "Greenhouse Controller Internal Temp"
+    id: internal_temp
+    update_interval: never
+
+  - platform: wifi_signal
+    name: "Greenhouse WiFi Signal"
+    id: wifi_rssi
+    update_interval: never
+
+  - platform: uptime
+    name: "Greenhouse Uptime"
+
+  - platform: dallas_temp
+    name: "Greenhouse Temp 1"
+    index: 0
+    id: temp_sensor_1
+    update_interval: never
+
+  - platform: dallas_temp
+    name: "Greenhouse Temp 2"
+    index: 1
+    id: temp_sensor_2
+    update_interval: never
+
 switch:
   - platform: gpio
     name: "Greenhouse Mister"
@@ -156,17 +178,12 @@ script:
           condition:
             lambda: 'return true;'
           then:
+            # Refresh all snapshot sensors
+            - component.update: batt_12v
+            - component.update: batt_ctrl
+            - component.update: internal_temp
+            - component.update: wifi_rssi
             - component.update: temp_sensor_1
             - component.update: temp_sensor_2
+            - logger.log: "Greenhouse sensors updated via loop."
             - delay: !lambda 'return id(temp_interval).state * 60000;'
-
-web_server:
-  port: 80
-  version: 2
-
-logger:
-api:
-      encryption:
-        key: !secret api_encryption_key
-ota:
-  - platform: esphome
