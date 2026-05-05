@@ -1,30 +1,53 @@
-# ESP32 Greenhouse Controller
+# ESP32 Greenhouse Controller (ESP-IDF)
 
-An ESP-IDF based greenhouse automation system designed for high-altitude environments[cite: 2, 3]. This system monitors battery health, internal chip temperature, and environmental sensors via 1-Wire.
+A sophisticated greenhouse automation and monitoring system built on the **ESP-IDF** framework via ESPHome. This controller is optimized for solar-powered operation in Colorado, featuring noise-filtered power monitoring and dynamic sensor polling.
 
-## Features
-- **Dual-Rail Battery Monitoring:** 
-  - **12V System:** Monitors for motor/fan rails with hysteresis to prevent relay chatter[cite: 1, 2].
-  - **Controller Rail:** Uses custom voltage-to-capacity mapping for precision power management[cite: 1, 2].
-- **Adaptive Power Management:**
-  - **Normal Mode:** Continuous operation with UI-defined update intervals (1–60 min)[cite: 1, 2].
-  - **Deep Sleep Mode:** Triggers when controller battery capacity drops below **60% (3.27V)** to conserve power between cycles[cite: 1].
-  - **Emergency Shutdown:** Kills all high-power peripherals if capacity drops below **30% (3.22V)**[cite: 1, 2].
-- **Dynamic Update Intervals:** Adjust sensor polling frequency via Home Assistant slider[cite: 1].
-- **Signal Stability:** Background ADC sampling with 1-minute sliding window moving averages[cite: 1, 2].
-- **Adaptive Power Management:** Continuous operation or Deep Sleep based on capacity thresholds[cite: 1, 2].
-- **Logging Diagnostics:** Real-time logging of battery voltage used for hysteresis and sleep logic[cite: 1].
+## 🚀 Key Features
+
+*   **Dynamic Polling Interval:** Controlled via a Home Assistant slider (1–60 min). Updates occur instantly when the slider is moved.
+*   **Dual-Layer Power Monitoring:** 
+    *   **Background Sampling:** ADCs sample every 10s to maintain a 1-minute sliding window average.
+    *   **Snapshot Publishing:** Public sensors only update at the user-defined interval to reduce log noise and network overhead.
+*   **Safety Interlocks:** Automated critical shutdown of high-power peripherals (Fans/Misters) based on battery voltage thresholds.
+*   **WiFi Optimization:** Uses `fast_connect` and optimized output power to reduce radio "on-time" and prevent voltage brownouts.
+*   **ESP-IDF Framework:** Leverages the native ESP32 framework for better stability and advanced memory management.
+
+## 🛠 Hardware Configuration
+
+| Component | ESP32 Pin | Description |
+| :--- | :--- | :--- |
+| **1-Wire Bus** | GPIO4 | DS18B20 Sensors (Requires 4.7kΩ pull-up) |
+| **12V ADC** | GPIO34 | System Battery (via 100kΩ/22kΩ divider) |
+| **Ctrl ADC** | GPIO35 | Internal Battery (via voltage divider) |
+| **Mister** | GPIO13 | Relay/MOSFET Output |
+| **Fan** | GPIO14 | Relay/MOSFET Output |
+
+## 📊 Sensor Logic
+
+The system utilizes a "Template" sensor pattern to decouple physical hardware reading from data reporting:
+1. **Raw Sensors:** Run at `10s` intervals (internal only) to fill the `sliding_window_moving_average`.
+2. **Template Sensors:** Updated via a background `while` loop script triggered by the `temp_interval` number entity.
+3. **Internal Health:** Monitors ESP32 chip temperature to detect enclosure overheating.
+
+## 📦 Setup & Deployment
+
+### Prerequisites
+*   ESPHome (Tested on **2025.7.0+**)
+*   A valid `secrets.yaml` containing WiFi and API credentials.
+
+### Installation
+```bash
+# Clone the repository
+git clone <your-repo-url>
+cd greenhouse-controller
+
+# Compile and upload
+esphome run greenhouse.yaml# ESP32 Greenhouse Controller
 
 ## Diagnostics & Troubleshooting
 - **Web UI Accessibility:** The Web UI is only available during the `on_boot` delay (15s) and while the battery is above 60% (3.27V)[cite: 1, 2].
 - **Filter Warming:** The ADC uses a 6-sample sliding window. It takes 60 seconds of uptime for the battery readings to stabilize. Logic triggers may be delayed until the window is full[cite: 1].
 - **Serial/Web Logs:** Look for `Battery Logic Check: Voltage is X.XXXV` to see the exact float value being compared against the thresholds[cite: 1].
-
-## Hardware Configuration
-- **Framework:** ESP-IDF (Strict)[cite: 1, 3].
-- **12V Rail (GPIO34):** 100kΩ/22kΩ divider[cite: 2].
-- **1S Rail (GPIO35):** 10kΩ/10kΩ divider[cite: 2].
-- **Actuators:** Mister (GPIO13), Fan (GPIO14)[cite: 2].
 
 ## Battery Capacity Reference (1-Cell)
 | Capacity | Voltage | Action |
