@@ -42,7 +42,7 @@ git clone <your-repo-url>
 cd greenhouse-controller
 
 # Compile and upload
-esphome run greenhouse.yaml# ESP32 Greenhouse Controller
+esphome run esphome-web-abcdd4.yaml# ESP32 Greenhouse Controller
 
 ## Diagnostics & Troubleshooting
 - **Web UI Accessibility:** The Web UI is only available during the `on_boot` delay (15s) and while the battery is above 60% (3.27V)[cite: 1, 2].
