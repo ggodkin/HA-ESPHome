@@ -25,10 +25,10 @@ wifi:
   output_power: 17.0dBm # Balanced for -79dBm signal
   
   # Static IP cuts radio "on-time" during boot by seconds
-  manual_ip:
-    static_ip: 10.0.8.200
-    gateway: 10.0.8.1
-    subnet: 255.255.255.0
+  # manual_ip:
+  #  static_ip: 10.0.8.200
+  #  gateway: 10.0.8.1
+  #  subnet: 255.255.255.0
 
   # Prevents infinite reboot loops if WiFi is lost
   reboot_timeout: 15min
