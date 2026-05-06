@@ -10,16 +10,26 @@ esphome:
       - delay: ${boot_delay}
       - script.execute: sensor_loop
 
+# ============================
+# 🔧 USER CONFIGURABLE CONSTANTS
+# ============================
+
 substitutions:
+  # --- Timing ---
   default_update_interval_min: "5"
+
+  # --- GPIO Pins ---
   onewire_pin: GPIO4
   adc_12v_pin: GPIO34
   adc_ctrl_pin: GPIO35
   mister_pin: GPIO13
   fan_pin: GPIO14
+
+  # --- Voltage Calibration ---
   voltage_multiplier_12v: "5.545"
   voltage_multiplier_ctrl: "2.0"
 
+  # --- Battery Thresholds with Hysteresis ---
   low_12v_shutdown: "11.1"
   low_12v_restore: "12.0"
 
@@ -32,9 +42,20 @@ substitutions:
   ctrl_battery_full_v: "4.2"
   ctrl_battery_empty_v: "3.3"
 
+  # --- Temperature Control (°F) ---
+  mister_on_temp: "75.0"
+  mister_off_temp: "73.0"
+  fan_on_temp: "80.0"
+  fan_off_temp: "78.0"
+
+  # --- Power & WiFi ---
   wifi_output_power: "17.0dBm"
   deep_sleep_duration: "4h"
   boot_delay: "15s"
+
+# ============================
+# END OF CONFIGURABLE SECTION
+# ============================
 
 esp32:
   board: esp32dev
@@ -77,7 +98,6 @@ one_wire:
     pin: ${onewire_pin}
     id: dallas_bus
 
-# Global variables to track state (for hysteresis)
 globals:
   - id: loads_enabled
     type: bool
@@ -89,6 +109,7 @@ globals:
     restore_value: false
     initial_value: "false"
 
+# Control Interface
 number:
   - platform: template
     name: "Update Interval"
@@ -120,7 +141,15 @@ text_sensor:
       esp_chip_info(&chip_info);
       return str_sprintf("Rev %d", chip_info.revision);
 
+  - platform: template
+    name: "Detected Temperature Sensors"
+    id: dallas_sensor_count
+    update_interval: 30s
+    lambda: |-
+      return str_sprintf("%d sensor(s) found", id(dallas_bus).get_devices().size());
+
 sensor:
+  # Background ADC Sampling
   - platform: adc
     pin: ${adc_12v_pin}
     id: batt_12v_raw
@@ -145,6 +174,7 @@ sensor:
           window_size: 6
           send_every: 1
 
+  # Battery Sensors
   - platform: template
     name: "12V System Voltage"
     id: batt_12v
@@ -176,10 +206,15 @@ sensor:
       if (pct < 0) return 0.0;
       return pct;
 
+  # MCU Core Temperature - Converted to °F
   - platform: internal_temperature
     name: "Greenhouse Controller Internal Temp"
     id: internal_temp
     update_interval: never
+    filters:
+      - lambda: |-
+          return x * 1.8 + 32.0;  // Convert C to F
+    unit_of_measurement: "°F"
 
   - platform: wifi_signal
     name: "Greenhouse WiFi Signal"
@@ -189,17 +224,17 @@ sensor:
   - platform: uptime
     name: "Greenhouse Uptime"
 
+  # Greenhouse Air Temperature
   - platform: dallas_temp
-    name: "Greenhouse Temp 1"
+    name: "Greenhouse Air Temperature"
+    id: greenhouse_temp
     index: 0
-    id: temp_sensor_1
+    resolution: 12
     update_interval: never
-
-  - platform: dallas_temp
-    name: "Greenhouse Temp 2"
-    index: 1
-    id: temp_sensor_2
-    update_interval: never
+    filters:
+      - lambda: |-
+          return x * 1.8 + 32.0;  // Convert C to F
+    unit_of_measurement: "°F"
 
 switch:
   - platform: gpio
@@ -227,10 +262,10 @@ script:
             - component.update: batt_ctrl_pct
             - component.update: internal_temp
             - component.update: wifi_rssi
-            - component.update: temp_sensor_1
-            - component.update: temp_sensor_2
+            - component.update: dallas_sensor_count
+            - component.update: greenhouse_temp
 
-            # === 12V Battery Hysteresis Logic ===
+            # === Battery Priority (overrides everything) ===
             - if:
                 condition:
                   lambda: |-
@@ -238,9 +273,7 @@ script:
                 then:
                   - switch.turn_off: GHSw1
                   - switch.turn_off: GHSw2
-                  - globals.set:
-                      id: loads_enabled
-                      value: 'false'
+                  - globals.set: {id: loads_enabled, value: 'false'}
                   - logger.log: "12V Battery Low - Loads Disabled"
 
             - if:
@@ -248,12 +281,9 @@ script:
                   lambda: |-
                     return id(batt_12v_raw).state > ${low_12v_restore} && !id(loads_enabled);
                 then:
-                  - globals.set:
-                      id: loads_enabled
-                      value: 'true'
-                  - logger.log: "12V Battery Recovered - Loads Re-enabled"
+                  - globals.set: {id: loads_enabled, value: 'true'}
+                  - logger.log: "12V Battery Recovered"
 
-            # === Controller Battery Hysteresis Logic ===
             - if:
                 condition:
                   lambda: |-
@@ -261,9 +291,7 @@ script:
                 then:
                   - switch.turn_off: GHSw1
                   - switch.turn_off: GHSw2
-                  - globals.set:
-                      id: loads_enabled
-                      value: 'false'
+                  - globals.set: {id: loads_enabled, value: 'false'}
                   - logger.log: "Controller Battery Low - Peripherals Disabled"
 
             - if:
@@ -271,10 +299,8 @@ script:
                   lambda: |-
                     return id(batt_ctrl_pct).state > ${ctrl_battery_low_restore} && !id(loads_enabled);
                 then:
-                  - globals.set:
-                      id: loads_enabled
-                      value: 'true'
-                  - logger.log: "Controller Battery Recovered - Peripherals Re-enabled"
+                  - globals.set: {id: loads_enabled, value: 'true'}
+                  - logger.log: "Controller Battery Recovered"
 
             # === Critical Deep Sleep ===
             - if:
@@ -282,14 +308,42 @@ script:
                   lambda: |-
                     return id(batt_ctrl_pct).state < ${ctrl_battery_critical_pct} && !id(critical_sleep_armed);
                 then:
-                  - globals.set:
-                      id: critical_sleep_armed
-                      value: 'true'
-                  - logger.log: "CRITICAL: Battery very low - Deep sleep in 10s"
+                  - globals.set: {id: critical_sleep_armed, value: 'true'}
+                  - logger.log: "CRITICAL: Battery very low - Entering deep sleep"
                   - delay: 10s
                   - deep_sleep.enter:
                       id: deep_sleep_control
                       sleep_duration: ${deep_sleep_duration}
+
+            # === Temperature Automation (only if loads allowed) ===
+            - if:
+                condition:
+                  lambda: |-
+                    return id(loads_enabled) && id(greenhouse_temp).has_state();
+                then:
+                  # Mister Control
+                  - if:
+                      condition:
+                        lambda: 'return id(greenhouse_temp).state > ${mister_on_temp};'
+                      then:
+                        - switch.turn_on: GHSw1
+                  - if:
+                      condition:
+                        lambda: 'return id(greenhouse_temp).state < ${mister_off_temp};'
+                      then:
+                        - switch.turn_off: GHSw1
+
+                  # Fan Control
+                  - if:
+                      condition:
+                        lambda: 'return id(greenhouse_temp).state > ${fan_on_temp};'
+                      then:
+                        - switch.turn_on: GHSw2
+                  - if:
+                      condition:
+                        lambda: 'return id(greenhouse_temp).state < ${fan_off_temp};'
+                      then:
+                        - switch.turn_off: GHSw2
 
             - logger.log: "Greenhouse loop updated."
             - delay: !lambda 'return id(temp_interval).state * 60000;'

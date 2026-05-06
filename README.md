@@ -1,57 +1,83 @@
-# ESP32 Greenhouse Controller (ESP-IDF)
+# HA-ESPHome Greenhouse Controller
 
-A sophisticated greenhouse automation and monitoring system built on the **ESP-IDF** framework via ESPHome. This controller is optimized for solar-powered operation in Colorado, featuring noise-filtered power monitoring and dynamic sensor polling.
+A robust, low-power ESP32-based greenhouse automation system for Home Assistant using **ESP-IDF**. Optimized for solar/battery operation in Colorado.
 
-## 🚀 Key Features
+## Features
 
-*   **Dynamic Polling Interval:** Controlled via a Home Assistant slider (1–60 min). Updates occur instantly when the slider is moved.
-*   **Dual-Layer Power Monitoring:** 
-    *   **Background Sampling:** ADCs sample every 10s to maintain a 1-minute sliding window average.
-    *   **Snapshot Publishing:** Public sensors only update at the user-defined interval to reduce log noise and network overhead.
-*   **Safety Interlocks:** Automated critical shutdown of high-power peripherals (Fans/Misters) based on battery voltage thresholds.
-*   **WiFi Optimization:** Uses `fast_connect` and optimized output power to reduce radio "on-time" and prevent voltage brownouts.
-*   **ESP-IDF Framework:** Leverages the native ESP32 framework for better stability and advanced memory management.
+- **Dynamic Update Interval** — Adjustable from 1 to 60 minutes via Home Assistant slider
+- **Smart Battery Management** with hysteresis to prevent rapid cycling
+- **Temperature Automation**:
+  - Mister turns **ON** above 75°F, **OFF** below 73°F
+  - Fan turns **ON** above 80°F, **OFF** below 78°F
+- **Battery Priority** — Low battery conditions override temperature automation
+- **All Temperatures in °F** — Greenhouse air + MCU core temperature
+- **Power Optimizations** — WiFi power saving, fast connect, deep sleep support
+- **Background ADC Sampling** — Stable battery readings with moving average filter
 
-## 🛠 Hardware Configuration
+## Hardware Pinout
 
-| Component | ESP32 Pin | Description |
-| :--- | :--- | :--- |
-| **1-Wire Bus** | GPIO4 | DS18B20 Sensors (Requires 4.7kΩ pull-up) |
-| **12V ADC** | GPIO34 | System Battery (via 100kΩ/22kΩ divider) |
-| **Ctrl ADC** | GPIO35 | Internal Battery (via voltage divider) |
-| **Mister** | GPIO13 | Relay/MOSFET Output |
-| **Fan** | GPIO14 | Relay/MOSFET Output |
+| Component                    | Pin      | Notes                              |
+|-----------------------------|----------|------------------------------------|
+| 1-Wire (DS18B20)            | GPIO4    | 4.7kΩ pull-up resistor required   |
+| 12V System Voltage (ADC)    | GPIO34   | Voltage divider                    |
+| Controller Battery (ADC)    | GPIO35   | Voltage divider                    |
+| Greenhouse Mister           | GPIO13   | Relay or logic-level MOSFET        |
+| Greenhouse Fan              | GPIO14   | Relay or logic-level MOSFET        |
 
-## 📊 Sensor Logic
+## Configuration
 
-The system utilizes a "Template" sensor pattern to decouple physical hardware reading from data reporting:
-1. **Raw Sensors:** Run at `10s` intervals (internal only) to fill the `sliding_window_moving_average`.
-2. **Template Sensors:** Updated via a background `while` loop script triggered by the `temp_interval` number entity.
-3. **Internal Health:** Monitors ESP32 chip temperature to detect enclosure overheating.
+All key parameters are located at the top of `esphome-greenhouse.yaml` under `substitutions`:
 
-## 📦 Setup & Deployment
+- Temperature thresholds (`mister_on_temp`, `fan_on_temp`, etc.)
+- Battery voltage/percentage thresholds + hysteresis
+- Voltage multipliers (calibration)
+- Update interval, deep sleep duration, etc.
 
-### Prerequisites
-*   ESPHome (Tested on **2025.7.0+**)
-*   A valid `secrets.yaml` containing WiFi and API credentials.
+## Home Assistant Entities
 
-### Installation
-```bash
-# Clone the repository
-git clone <your-repo-url>
-cd greenhouse-controller
+**Sensors:**
+- 12V System Voltage
+- Controller Battery Capacity (%)
+- Greenhouse Air Temperature (°F)
+- Greenhouse Controller Internal Temp (°F)
+- Greenhouse WiFi Signal
+- Greenhouse Uptime
+- And more...
 
-# Compile and upload
-esphome run esphome-web-abcdd4.yaml# ESP32 Greenhouse Controller
+**Switches:**
+- Greenhouse Mister
+- Greenhouse Fan
 
-## Diagnostics & Troubleshooting
-- **Web UI Accessibility:** The Web UI is only available during the `on_boot` delay (15s) and while the battery is above 60% (3.27V)[cite: 1, 2].
-- **Filter Warming:** The ADC uses a 6-sample sliding window. It takes 60 seconds of uptime for the battery readings to stabilize. Logic triggers may be delayed until the window is full[cite: 1].
-- **Serial/Web Logs:** Look for `Battery Logic Check: Voltage is X.XXXV` to see the exact float value being compared against the thresholds[cite: 1].
+**Number:**
+- Update Interval (minutes)
 
-## Battery Capacity Reference (1-Cell)
-| Capacity | Voltage | Action |
-| :--- | :--- | :--- |
-| 100% | 4.20V | Normal Operation |
-| 60% | 3.27V | **Enter Deep Sleep** |
-| 30% | 3.22V | **Emergency Shutdown** |
+**Text Sensors:**
+- Clock
+- Chip Revision
+- Detected Temperature Sensors
+
+## Control Logic Priority
+
+1. **Battery Protection** (Highest priority)
+2. **Temperature Automation** (Only active when battery is healthy)
+
+## Diagnostics
+
+- Web server is available briefly on boot and when controller battery is healthy
+- Check ESPHome logs for battery and temperature control messages
+- Battery readings stabilize after ~60 seconds due to averaging filter
+
+## Battery Reference (Controller)
+
+| Battery % | Approximate Voltage | Action                     |
+|-----------|---------------------|----------------------------|
+| > 65%     | > 3.70V             | Normal operation           |
+| < 60%     | ~3.65V              | Loads disabled             |
+| < 30%     | ~3.40V              | Deep sleep (4 hours)       |
+
+## Installation
+
+1. Copy `esphome-greenhouse.yaml` and update your `secrets.yaml`
+2. Flash the device:
+   ```bash
+   esphome run esphome-greenhouse.yaml
