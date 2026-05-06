@@ -1,27 +1,8 @@
-substitutions:
-  # Update Interval Default
-  initial_update_interval: "5"
-  
-  # 12V System Thresholds[cite: 1, 2]
-  batt_12v_critical: "11.1"
-  batt_12v_recovery: "12.2"
-  
-  # Controller Battery Thresholds (Based on provided capacity table)[cite: 1, 2]
-  # 30% Capacity = 3.22V (Shutdown)
-  # 60% Capacity = 3.27V (Deep Sleep)
-  batt_ctrl_shutdown: "3.22"
-  batt_ctrl_sleep: "3.27"
-  
-  # GPIO Pins[cite: 1, 2]
-  pin_one_wire: GPIO4
-  pin_batt_12v: GPIO34
-  pin_batt_ctrl: GPIO35
-  pin_mister: GPIO13
-  pin_fan: GPIO14
-
 esphome:
   name: esphome-greenhouse
   friendly_name: ESPHome Greenhouse
+  includes:
+    - "<esp_chip_info.h>" # Note the angle brackets and quotes
   on_boot:
     priority: -10
     then:
@@ -34,9 +15,6 @@ esp32:
     type: esp-idf
     advanced:
       sram1_as_iram: true
-
-deep_sleep:
-  id: greenhouse_sleep
 
 wifi:
   ssid: !secret wifi_ssid
@@ -59,6 +37,10 @@ web_server:
   port: 80
   version: 2
 
+deep_sleep:
+  id: deep_sleep_control
+
+# Infrastructure
 time:
   - platform: sntp
     id: sntp_time
@@ -66,7 +48,7 @@ time:
 
 one_wire:
   - platform: gpio
-    pin: ${pin_one_wire}
+    pin: GPIO4
     id: dallas_bus
 
 # Control Interface
@@ -77,7 +59,7 @@ number:
     min_value: 1
     max_value: 60
     step: 1
-    initial_value: ${initial_update_interval}
+    initial_value: 5
     unit_of_measurement: "min"
     optimistic: true
     set_action:
@@ -93,10 +75,18 @@ text_sensor:
     lambda: |-
       return id(sntp_time).now().strftime("%H:%M");
 
+  - platform: template
+    name: "Chip Revision"
+    id: chip_rev
+    lambda: |-
+      esp_chip_info_t chip_info;
+      esp_chip_info(&chip_info);
+      return str_sprintf("Rev %d", chip_info.revision); // Removed the curly braces
+
 sensor:
-  # Background ADC Sampling[cite: 1, 2]
+  # --- Background ADC Sampling (Internal) ---
   - platform: adc
-    pin: ${pin_batt_12v}
+    pin: GPIO34
     id: batt_12v_raw
     internal: true
     update_interval: 10s
@@ -108,7 +98,7 @@ sensor:
           send_every: 1
 
   - platform: adc
-    pin: ${pin_batt_ctrl}
+    pin: GPIO35
     id: batt_ctrl_raw
     internal: true
     update_interval: 10s
@@ -119,7 +109,7 @@ sensor:
           window_size: 6
           send_every: 1
 
-  # 12V System Logic[cite: 1, 2]
+  # --- 12V System Voltage (Equipment Safety) ---
   - platform: template
     name: "12V System Voltage"
     id: batt_12v
@@ -132,55 +122,56 @@ sensor:
       then:
         - if:
             condition:
-              lambda: 'return x < ${batt_12v_critical};' 
+              lambda: 'return x < 11.1;' 
             then:
               - switch.turn_off: GHSw1 
               - switch.turn_off: GHSw2
-              - logger.log: "CRITICAL: 12V Battery Low."
-        - if:
-            condition:
-              lambda: 'return x > ${batt_12v_recovery};' 
-            then:
-              - logger.log: "INFO: 12V Battery Healthy."
+              - logger.log: "CRITICAL: 12V Battery Low - Disabling Load"
 
-# Controller Battery Voltage with Specific Capacity Mapping
+  # --- Controller Battery Voltage ---
   - platform: template
     name: "Controller Battery Voltage"
-    id: batt_ctrl
+    id: batt_ctrl_volts
     unit_of_measurement: "V"
     device_class: "voltage"
     state_class: "measurement"
     update_interval: never
     lambda: 'return id(batt_ctrl_raw).state;'
+
+  # --- Controller Battery Capacity ---
+  - platform: template
+    name: "Controller Battery Capacity"
+    id: batt_ctrl_pct
+    unit_of_measurement: "%"
+    device_class: "battery"
+    update_interval: never
+    lambda: |-
+      float voltage = id(batt_ctrl_raw).state;
+      float pct = (voltage - 3.3) / (4.2 - 3.3) * 100.0;
+      if (pct > 100) return 100.0;
+      if (pct < 0) return 0.0;
+      return pct;
     on_value:
       then:
-        # Fixed Diagnostic Log
-        - logger.log:
-            format: "Battery Logic Check: Voltage is %.3fV"
-            args: 
-              - 'x'
+        # Load Shedding at 60%
         - if:
-            # Shutdown Logic (<30%)
             condition:
-              lambda: 'return x < ${batt_ctrl_shutdown};' 
+              lambda: 'return x < 60.0;'
             then:
               - switch.turn_off: GHSw1
               - switch.turn_off: GHSw2
-              - logger.log: "CRITICAL: Controller Battery < 30%."
+              - logger.log: "ADVISORY: Controller Battery < 60%. Peripherals disabled."
+        # Deep Sleep at 30%
         - if:
-            # Deep Sleep Logic (<60%)[cite: 1, 2]
             condition:
-              lambda: 'return x >= ${batt_ctrl_shutdown} && x < ${batt_ctrl_sleep};'
+              lambda: 'return x < 30.0;'
             then:
-              - logger.log:
-                  format: "LOW POWER: %.3fV is below sleep threshold %.2fV. Sleeping now."
-                  args:
-                    - 'x'
-                    - ${batt_ctrl_sleep}
-              - deep_sleep.enter:
-                  id: greenhouse_sleep
-                  sleep_duration: !lambda 'return id(temp_interval).state * 60000;'
-                                    
+              - logger.log: "CRITICAL: Controller Battery < 30%. Deep Sleep 4h."
+              - delay: 5s 
+              - deep_sleep.enter: 
+                  id: deep_sleep_control
+                  sleep_duration: 4h
+                  
   - platform: internal_temperature
     name: "Greenhouse Controller Internal Temp"
     id: internal_temp
@@ -209,12 +200,12 @@ sensor:
 switch:
   - platform: gpio
     name: "Greenhouse Mister"
-    pin: ${pin_mister}
+    pin: GPIO13
     id: GHSw1
     restore_mode: ALWAYS_OFF
   - platform: gpio
     name: "Greenhouse Fan"
-    pin: ${pin_fan}
+    pin: GPIO14
     id: GHSw2
     restore_mode: ALWAYS_OFF
 
@@ -227,10 +218,11 @@ script:
             lambda: 'return true;'
           then:
             - component.update: batt_12v
-            - component.update: batt_ctrl
+            - component.update: batt_ctrl_volts # Added this update
+            - component.update: batt_ctrl_pct
             - component.update: internal_temp
             - component.update: wifi_rssi
             - component.update: temp_sensor_1
             - component.update: temp_sensor_2
-            - logger.log: "Greenhouse sensors updated via loop."
+            - logger.log: "Greenhouse loop updated."
             - delay: !lambda 'return id(temp_interval).state * 60000;'
