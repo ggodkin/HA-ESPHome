@@ -71,6 +71,13 @@ wifi:
   power_save_mode: light
   output_power: ${wifi_output_power}
   reboot_timeout: 15min
+  ap:
+    ssid: "Greenhouse-ESP32"
+    password: "greenhouse123"
+    channel: 1
+
+# Fallback Access Point
+captive_portal:
 
 api:
   encryption:
@@ -149,7 +156,6 @@ text_sensor:
       return str_sprintf("%d sensor(s) found", id(dallas_bus).get_devices().size());
 
 sensor:
-  # Background ADC Sampling
   - platform: adc
     pin: ${adc_12v_pin}
     id: batt_12v_raw
@@ -174,7 +180,6 @@ sensor:
           window_size: 6
           send_every: 1
 
-  # Battery Sensors
   - platform: template
     name: "12V System Voltage"
     id: batt_12v
@@ -206,7 +211,6 @@ sensor:
       if (pct < 0) return 0.0;
       return pct;
 
-  # MCU Core Temperature - Converted to °F
   - platform: internal_temperature
     name: "Greenhouse Controller Internal Temp"
     id: internal_temp
@@ -224,7 +228,6 @@ sensor:
   - platform: uptime
     name: "Greenhouse Uptime"
 
-  # Greenhouse Air Temperature
   - platform: dallas_temp
     name: "Greenhouse Air Temperature"
     id: greenhouse_temp
@@ -321,7 +324,6 @@ script:
                   lambda: |-
                     return id(loads_enabled) && id(greenhouse_temp).has_state();
                 then:
-                  # Mister Control
                   - if:
                       condition:
                         lambda: 'return id(greenhouse_temp).state > ${mister_on_temp};'
@@ -333,7 +335,6 @@ script:
                       then:
                         - switch.turn_off: GHSw1
 
-                  # Fan Control
                   - if:
                       condition:
                         lambda: 'return id(greenhouse_temp).state > ${fan_on_temp};'

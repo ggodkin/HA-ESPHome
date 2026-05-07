@@ -1,18 +1,19 @@
 # HA-ESPHome Greenhouse Controller
 
-A robust, low-power ESP32-based greenhouse automation system for Home Assistant using **ESP-IDF**. Optimized for solar/battery operation in Colorado.
+A robust, low-power ESP32-based greenhouse automation system for Home Assistant using **ESP-IDF**. Optimized for reliable solar/battery operation in Colorado.
 
 ## Features
 
-- **Dynamic Update Interval** — Adjustable from 1 to 60 minutes via Home Assistant slider
-- **Smart Battery Management** with hysteresis to prevent rapid cycling
+- **Fully Autonomous Operation** — Continues to run all automation even without WiFi or Home Assistant connection
+- **Dynamic Update Interval** — Adjustable from 1 to 60 minutes via Home Assistant
+- **Smart Battery Management** with hysteresis
 - **Temperature Automation**:
   - Mister turns **ON** above 75°F, **OFF** below 73°F
   - Fan turns **ON** above 80°F, **OFF** below 78°F
-- **Battery Priority** — Low battery conditions override temperature automation
+- **Battery Priority** — Low battery conditions override temperature controls
 - **All Temperatures in °F** — Greenhouse air + MCU core temperature
-- **Power Optimizations** — WiFi power saving, fast connect, deep sleep support
-- **Background ADC Sampling** — Stable battery readings with moving average filter
+- **WiFi Fallback** — Automatic Access Point mode if main WiFi fails
+- **Power Optimizations** — Low power mode, fast connect, deep sleep support
 
 ## Hardware Pinout
 
@@ -24,13 +25,21 @@ A robust, low-power ESP32-based greenhouse automation system for Home Assistant 
 | Greenhouse Mister           | GPIO13   | Relay or logic-level MOSFET        |
 | Greenhouse Fan              | GPIO14   | Relay or logic-level MOSFET        |
 
+## Offline / Autonomous Operation
+
+The controller is designed to work **independently** of WiFi and Home Assistant:
+
+- All battery protection logic and temperature-based automation (Mister & Fan) continue to function normally if WiFi is unavailable or connection to Home Assistant is lost.
+- If the main WiFi network is down, the device automatically creates a fallback Access Point named **`Greenhouse-ESP32`** (password: `greenhouse123`).
+- You can connect to this AP to access the web interface and monitor the device.
+
 ## Configuration
 
-All key parameters are located at the top of `esphome-greenhouse.yaml` under `substitutions`:
+All key parameters are at the top of `esphome-greenhouse.yaml` under `substitutions`:
 
 - Temperature thresholds (`mister_on_temp`, `fan_on_temp`, etc.)
-- Battery voltage/percentage thresholds + hysteresis
-- Voltage multipliers (calibration)
+- Battery thresholds and hysteresis
+- Voltage calibration multipliers
 - Update interval, deep sleep duration, etc.
 
 ## Home Assistant Entities
@@ -42,7 +51,6 @@ All key parameters are located at the top of `esphome-greenhouse.yaml` under `su
 - Greenhouse Controller Internal Temp (°F)
 - Greenhouse WiFi Signal
 - Greenhouse Uptime
-- And more...
 
 **Switches:**
 - Greenhouse Mister
@@ -59,7 +67,7 @@ All key parameters are located at the top of `esphome-greenhouse.yaml` under `su
 ## Control Logic Priority
 
 1. **Battery Protection** (Highest priority)
-2. **Temperature Automation** (Only active when battery is healthy)
+2. **Temperature Automation** (Only runs when battery allows)
 
 ## Diagnostics
 
