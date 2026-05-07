@@ -15,40 +15,26 @@ esphome:
 # ============================
 
 substitutions:
-  # --- Timing ---
   default_update_interval_min: "5"
-
-  # --- GPIO Pins ---
   onewire_pin: GPIO4
   adc_12v_pin: GPIO34
   adc_ctrl_pin: GPIO35
   mister_pin: GPIO13
   fan_pin: GPIO14
-
-  # --- Voltage Calibration ---
   voltage_multiplier_12v: "5.545"
   voltage_multiplier_ctrl: "2.0"
-
-  # --- Battery Thresholds with Hysteresis ---
   low_12v_shutdown: "11.1"
   low_12v_restore: "12.0"
-
   ctrl_battery_low_pct: "60.0"
   ctrl_battery_low_restore: "65.0"
-
   ctrl_battery_critical_pct: "30.0"
   ctrl_battery_critical_restore: "35.0"
-
   ctrl_battery_full_v: "4.2"
   ctrl_battery_empty_v: "3.3"
-
-  # --- Temperature Control (°F) ---
   mister_on_temp: "75.0"
   mister_off_temp: "73.0"
   fan_on_temp: "80.0"
   fan_off_temp: "78.0"
-
-  # --- Power & WiFi ---
   wifi_output_power: "17.0dBm"
   deep_sleep_duration: "4h"
   boot_delay: "15s"
@@ -76,7 +62,6 @@ wifi:
     password: "greenhouse123"
     channel: 1
 
-# Fallback Access Point
 captive_portal:
 
 api:
@@ -86,10 +71,13 @@ api:
 ota:
   - platform: esphome
 
+# --- LOGGER HOOK ---
 logger:
+  level: INFO
 
 web_server:
   port: 80
+  ota: false  # Removes OTA from the web UI
   version: 2
 
 deep_sleep:
@@ -110,13 +98,11 @@ globals:
     type: bool
     restore_value: true
     initial_value: "true"
-
   - id: critical_sleep_armed
     type: bool
     restore_value: false
     initial_value: "false"
 
-# Control Interface
 number:
   - platform: template
     name: "Update Interval"
@@ -149,12 +135,34 @@ text_sensor:
       return str_sprintf("Rev %d", chip_info.revision);
 
   - platform: template
-    name: "Detected Temperature Sensors"
-    id: dallas_sensor_count
-    update_interval: 30s
+    name: "Device Status"
+    id: device_status
+    icon: "mdi:barcode-scan"
+    update_interval: 60s
     lambda: |-
-      return str_sprintf("%d sensor(s) found", id(dallas_bus).get_devices().size());
+      std::string addr = id(greenhouse_temp).get_address_name();
+      if (addr.empty() || addr == "0x0000000000000000") {
+        return {"Initializing..."};
+      }
 
+      // Remove "0x" if it exists at the start
+      if (addr.substr(0, 2) == "0x") {
+        addr = addr.substr(2);
+      }
+
+      // Create a buffer for the formatted output (XX:XX:XX:XX:XX:XX:XX:XX)
+      char formatted[24];
+      
+      // We process the string in pairs of characters (bytes) 
+      // and reverse the order of those pairs.
+      // Indexing logic: 14:15, 12:13, 10:11, 8:9, 6:7, 4:5, 2:3, 0:1
+      sprintf(formatted, "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c:%c%c:%c%c",
+              addr[14], addr[15], addr[12], addr[13],
+              addr[10], addr[11], addr[8],  addr[9],
+              addr[6],  addr[7],  addr[4],  addr[5],
+              addr[2],  addr[3],  addr[0],  addr[1]);
+
+      return {formatted};
 sensor:
   - platform: adc
     pin: ${adc_12v_pin}
@@ -217,7 +225,7 @@ sensor:
     update_interval: never
     filters:
       - lambda: |-
-          return x * 1.8 + 32.0;  // Convert C to F
+          return x * 1.8 + 32.0;
     unit_of_measurement: "°F"
 
   - platform: wifi_signal
@@ -236,7 +244,7 @@ sensor:
     update_interval: never
     filters:
       - lambda: |-
-          return x * 1.8 + 32.0;  // Convert C to F
+          return x * 1.8 + 32.0;
     unit_of_measurement: "°F"
 
 switch:
@@ -265,86 +273,63 @@ script:
             - component.update: batt_ctrl_pct
             - component.update: internal_temp
             - component.update: wifi_rssi
-            - component.update: dallas_sensor_count
             - component.update: greenhouse_temp
+            # device_status is now updated automatically by logger
 
-            # === Battery Priority (overrides everything) ===
+            # Battery & Temperature Logic
             - if:
                 condition:
-                  lambda: |-
-                    return id(batt_12v_raw).state < ${low_12v_shutdown} && id(loads_enabled);
+                  lambda: 'return id(batt_12v_raw).state < ${low_12v_shutdown} && id(loads_enabled);'
                 then:
                   - switch.turn_off: GHSw1
                   - switch.turn_off: GHSw2
                   - globals.set: {id: loads_enabled, value: 'false'}
-                  - logger.log: "12V Battery Low - Loads Disabled"
 
             - if:
                 condition:
-                  lambda: |-
-                    return id(batt_12v_raw).state > ${low_12v_restore} && !id(loads_enabled);
+                  lambda: 'return id(batt_12v_raw).state > ${low_12v_restore} && !id(loads_enabled);'
                 then:
                   - globals.set: {id: loads_enabled, value: 'true'}
-                  - logger.log: "12V Battery Recovered"
 
             - if:
                 condition:
-                  lambda: |-
-                    return id(batt_ctrl_pct).state < ${ctrl_battery_low_pct} && id(loads_enabled);
+                  lambda: 'return id(batt_ctrl_pct).state < ${ctrl_battery_low_pct} && id(loads_enabled);'
                 then:
                   - switch.turn_off: GHSw1
                   - switch.turn_off: GHSw2
                   - globals.set: {id: loads_enabled, value: 'false'}
-                  - logger.log: "Controller Battery Low - Peripherals Disabled"
 
             - if:
                 condition:
-                  lambda: |-
-                    return id(batt_ctrl_pct).state > ${ctrl_battery_low_restore} && !id(loads_enabled);
+                  lambda: 'return id(batt_ctrl_pct).state > ${ctrl_battery_low_restore} && !id(loads_enabled);'
                 then:
                   - globals.set: {id: loads_enabled, value: 'true'}
-                  - logger.log: "Controller Battery Recovered"
 
-            # === Critical Deep Sleep ===
             - if:
                 condition:
-                  lambda: |-
-                    return id(batt_ctrl_pct).state < ${ctrl_battery_critical_pct} && !id(critical_sleep_armed);
+                  lambda: 'return id(batt_ctrl_pct).state < ${ctrl_battery_critical_pct} && !id(critical_sleep_armed);'
                 then:
                   - globals.set: {id: critical_sleep_armed, value: 'true'}
-                  - logger.log: "CRITICAL: Battery very low - Entering deep sleep"
                   - delay: 10s
                   - deep_sleep.enter:
                       id: deep_sleep_control
                       sleep_duration: ${deep_sleep_duration}
 
-            # === Temperature Automation (only if loads allowed) ===
             - if:
                 condition:
-                  lambda: |-
-                    return id(loads_enabled) && id(greenhouse_temp).has_state();
+                  lambda: 'return id(loads_enabled) && id(greenhouse_temp).has_state();'
                 then:
                   - if:
-                      condition:
-                        lambda: 'return id(greenhouse_temp).state > ${mister_on_temp};'
-                      then:
-                        - switch.turn_on: GHSw1
+                      condition: {lambda: 'return id(greenhouse_temp).state > ${mister_on_temp};'}
+                      then: {switch.turn_on: GHSw1}
                   - if:
-                      condition:
-                        lambda: 'return id(greenhouse_temp).state < ${mister_off_temp};'
-                      then:
-                        - switch.turn_off: GHSw1
+                      condition: {lambda: 'return id(greenhouse_temp).state < ${mister_off_temp};'}
+                      then: {switch.turn_off: GHSw1}
+                  - if:
+                      condition: {lambda: 'return id(greenhouse_temp).state > ${fan_on_temp};'}
+                      then: {switch.turn_on: GHSw2}
+                  - if:
+                      condition: {lambda: 'return id(greenhouse_temp).state < ${fan_off_temp};'}
+                      then: {switch.turn_off: GHSw2}
 
-                  - if:
-                      condition:
-                        lambda: 'return id(greenhouse_temp).state > ${fan_on_temp};'
-                      then:
-                        - switch.turn_on: GHSw2
-                  - if:
-                      condition:
-                        lambda: 'return id(greenhouse_temp).state < ${fan_off_temp};'
-                      then:
-                        - switch.turn_off: GHSw2
-
-            - logger.log: "Greenhouse loop updated."
             - delay: !lambda 'return id(temp_interval).state * 60000;'
