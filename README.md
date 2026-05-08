@@ -89,3 +89,7 @@ All important settings are located at the top of `esphome-greenhouse.yaml` under
 2. Flash the device:
    ```bash
    esphome run esphome-greenhouse.yaml
+
+##TO DO
+- Add pull up resistors for fan and mist MCU outputs, potentially pull down for MOSFET
+- Adjust 12v divider - add filter
