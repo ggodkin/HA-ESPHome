@@ -8,7 +8,7 @@ esphome:
     priority: -10
     then:
       - delay: ${boot_delay}
-      - script.execute: sensor_loop
+      - script.execute: force_logic_update
 
 # ============================
 # 🔧 USER CONFIGURABLE CONSTANTS
@@ -23,24 +23,25 @@ substitutions:
   fan_pin: GPIO14
   voltage_multiplier_12v: "5.545"
   voltage_multiplier_ctrl: "2.0"
+  
+  # Battery Thresholds
   low_12v_shutdown: "11.1"
-  low_12v_restore: "12.0"
-  ctrl_battery_low_pct: "60.0"
-  ctrl_battery_low_restore: "65.0"
-  ctrl_battery_critical_pct: "30.0"
-  ctrl_battery_critical_restore: "35.0"
+  ctrl_batt_load_disable_pct: "60.0"
+  ctrl_batt_sleep_pct: "30.0"
+  ctrl_batt_restore_pct: "65.0"
+  
   ctrl_battery_full_v: "4.2"
   ctrl_battery_empty_v: "3.3"
+  
   mister_on_temp: "75.0"
   mister_off_temp: "73.0"
   fan_on_temp: "80.0"
   fan_off_temp: "78.0"
   wifi_output_power: "17.0dBm"
-  deep_sleep_duration: "4h"
   boot_delay: "15s"
 
 # ============================
-# END OF CONFIGURABLE SECTION
+# CORE CONFIG
 # ============================
 
 esp32:
@@ -57,12 +58,6 @@ wifi:
   power_save_mode: light
   output_power: ${wifi_output_power}
   reboot_timeout: 15min
-  ap:
-    ssid: "Greenhouse-ESP32"
-    password: "greenhouse123"
-    channel: 1
-
-captive_portal:
 
 api:
   encryption:
@@ -71,37 +66,35 @@ api:
 ota:
   - platform: esphome
 
-# --- LOGGER HOOK ---
 logger:
-  level: INFO
+  level: DEBUG
 
 web_server:
   port: 80
-  ota: false  # Removes OTA from the web UI
   version: 2
-
-deep_sleep:
-  id: deep_sleep_control
 
 time:
   - platform: sntp
     id: sntp_time
     timezone: "MST7MDT,M3.2.0,M11.1.0"
 
+deep_sleep:
+  id: greenhouse_sleep
+  sleep_duration: 4h
+
 one_wire:
   - platform: gpio
     pin: ${onewire_pin}
-    id: dallas_bus
 
 globals:
   - id: loads_enabled
     type: bool
     restore_value: true
     initial_value: "true"
-  - id: critical_sleep_armed
-    type: bool
-    restore_value: false
-    initial_value: "false"
+
+# ============================
+# SENSORS & CONTROLS
+# ============================
 
 number:
   - platform: template
@@ -115,77 +108,27 @@ number:
     optimistic: true
     set_action:
       then:
-        - script.execute: sensor_loop
+        - script.stop: force_logic_update
+        - script.execute: force_logic_update
 
-text_sensor:
-  - platform: template
-    name: "Clock"
-    id: device_time
-    icon: "mdi:clock-outline"
-    update_interval: 60s
-    lambda: |-
-      return id(sntp_time).now().strftime("%H:%M");
-
-  - platform: template
-    name: "Chip Revision"
-    id: chip_rev
-    lambda: |-
-      esp_chip_info_t chip_info;
-      esp_chip_info(&chip_info);
-      return str_sprintf("Rev %d", chip_info.revision);
-
-  - platform: template
-    name: "Device Status"
-    id: device_status
-    icon: "mdi:barcode-scan"
-    update_interval: 60s
-    lambda: |-
-      std::string addr = id(greenhouse_temp).get_address_name();
-      if (addr.empty() || addr == "0x0000000000000000") {
-        return {"Initializing..."};
-      }
-
-      // Remove "0x" if it exists at the start
-      if (addr.substr(0, 2) == "0x") {
-        addr = addr.substr(2);
-      }
-
-      // Create a buffer for the formatted output (XX:XX:XX:XX:XX:XX:XX:XX)
-      char formatted[24];
-      
-      // We process the string in pairs of characters (bytes) 
-      // and reverse the order of those pairs.
-      // Indexing logic: 14:15, 12:13, 10:11, 8:9, 6:7, 4:5, 2:3, 0:1
-      sprintf(formatted, "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c:%c%c:%c%c",
-              addr[14], addr[15], addr[12], addr[13],
-              addr[10], addr[11], addr[8],  addr[9],
-              addr[6],  addr[7],  addr[4],  addr[5],
-              addr[2],  addr[3],  addr[0],  addr[1]);
-
-      return {formatted};
 sensor:
   - platform: adc
     pin: ${adc_12v_pin}
     id: batt_12v_raw
-    internal: true
-    update_interval: 10s
+    update_interval: never
     attenuation: 12db
     filters:
       - multiply: ${voltage_multiplier_12v}
-      - sliding_window_moving_average:
-          window_size: 6
-          send_every: 1
 
   - platform: adc
     pin: ${adc_ctrl_pin}
     id: batt_ctrl_raw
-    internal: true
-    update_interval: 10s
+    update_interval: never
     attenuation: 12db
     filters:
       - multiply: ${voltage_multiplier_ctrl}
-      - sliding_window_moving_average:
-          window_size: 6
+      - median:
+          window_size: 7
           send_every: 1
 
   - platform: template
@@ -193,17 +136,13 @@ sensor:
     id: batt_12v
     unit_of_measurement: "V"
     device_class: "voltage"
-    state_class: "measurement"
-    update_interval: never
     lambda: 'return id(batt_12v_raw).state;'
 
   - platform: template
-    name: "Controller Battery Voltage"
-    id: batt_ctrl_volts
+    name: "Control Battery Voltage"
+    id: batt_ctrl_v
     unit_of_measurement: "V"
     device_class: "voltage"
-    state_class: "measurement"
-    update_interval: never
     lambda: 'return id(batt_ctrl_raw).state;'
 
   - platform: template
@@ -211,41 +150,23 @@ sensor:
     id: batt_ctrl_pct
     unit_of_measurement: "%"
     device_class: "battery"
-    update_interval: never
     lambda: |-
-      float voltage = id(batt_ctrl_raw).state;
-      float pct = (voltage - ${ctrl_battery_empty_v}) / (${ctrl_battery_full_v} - ${ctrl_battery_empty_v}) * 100.0;
-      if (pct > 100) return 100.0;
-      if (pct < 0) return 0.0;
-      return pct;
-
-  - platform: internal_temperature
-    name: "Greenhouse Controller Internal Temp"
-    id: internal_temp
-    update_interval: never
-    filters:
-      - lambda: |-
-          return x * 1.8 + 32.0;
-    unit_of_measurement: "°F"
-
-  - platform: wifi_signal
-    name: "Greenhouse WiFi Signal"
-    id: wifi_rssi
-    update_interval: never
-
-  - platform: uptime
-    name: "Greenhouse Uptime"
+      if (!id(batt_ctrl_raw).has_state()) return NAN;
+      float v = id(batt_ctrl_raw).state;
+      float pct = (v - ${ctrl_battery_empty_v}) / (${ctrl_battery_full_v} - ${ctrl_battery_empty_v}) * 100.0;
+      return clamp(pct, 0.0f, 100.0f);
 
   - platform: dallas_temp
     name: "Greenhouse Air Temperature"
     id: greenhouse_temp
     index: 0
-    resolution: 12
     update_interval: never
     filters:
-      - lambda: |-
-          return x * 1.8 + 32.0;
+      - lambda: return x * 1.8 + 32.0;
     unit_of_measurement: "°F"
+
+  - platform: uptime
+    name: "Greenhouse Uptime"
 
 switch:
   - platform: gpio
@@ -261,75 +182,78 @@ switch:
     restore_mode: ALWAYS_OFF
 
 script:
-  - id: sensor_loop
+  - id: force_logic_update
     mode: restart
     then:
-      - while:
+      - logger.log: "Logic cycle started..."
+      
+      # Step 1: Physical Data Collection
+      - component.update: batt_12v_raw
+      - component.update: batt_ctrl_raw
+      - component.update: greenhouse_temp
+      - delay: 1s 
+
+      # Step 2: UI Refresh
+      - component.update: batt_12v
+      - component.update: batt_ctrl_v
+      - component.update: batt_ctrl_pct
+
+      # Step 3: Battery Management Logic
+      - if:
           condition:
-            lambda: 'return true;'
+            # TIER 3: CRITICAL (Control Batt < 30%) -> Hard Sleep
+            lambda: 'return id(batt_ctrl_pct).state < ${ctrl_batt_sleep_pct};'
           then:
-            - component.update: batt_12v
-            - component.update: batt_ctrl_volts
-            - component.update: batt_ctrl_pct
-            - component.update: internal_temp
-            - component.update: wifi_rssi
-            - component.update: greenhouse_temp
-            # device_status is now updated automatically by logger
+            - logger.log: "CRITICAL CONTROL BATTERY: Shutting down loads and sleeping."
+            - switch.turn_off: GHSw1
+            - switch.turn_off: GHSw2
+            - delay: 2s 
+            - deep_sleep.enter: greenhouse_sleep
 
-            # Battery & Temperature Logic
+      - if:
+          condition:
+            # TIER 2: LOW POWER (12V < 11.1V OR Control Batt < 60%) -> Soft Shutdown
+            lambda: |-
+              return id(batt_12v_raw).state < ${low_12v_shutdown} ||
+                     id(batt_ctrl_pct).state < ${ctrl_batt_load_disable_pct};
+          then:
             - if:
-                condition:
-                  lambda: 'return id(batt_12v_raw).state < ${low_12v_shutdown} && id(loads_enabled);'
-                then:
-                  - switch.turn_off: GHSw1
-                  - switch.turn_off: GHSw2
-                  - globals.set: {id: loads_enabled, value: 'false'}
-
+                condition: { lambda: 'return id(loads_enabled);' }
+                then: { logger.log: "LOW POWER MODE: Forcing loads OFF." }
+            - switch.turn_off: GHSw1
+            - switch.turn_off: GHSw2
+            - globals.set: { id: loads_enabled, value: "false" }
+          else:
             - if:
-                condition:
-                  lambda: 'return id(batt_12v_raw).state > ${low_12v_restore} && !id(loads_enabled);'
-                then:
-                  - globals.set: {id: loads_enabled, value: 'true'}
-
-            - if:
-                condition:
-                  lambda: 'return id(batt_ctrl_pct).state < ${ctrl_battery_low_pct} && id(loads_enabled);'
-                then:
-                  - switch.turn_off: GHSw1
-                  - switch.turn_off: GHSw2
-                  - globals.set: {id: loads_enabled, value: 'false'}
-
-            - if:
-                condition:
-                  lambda: 'return id(batt_ctrl_pct).state > ${ctrl_battery_low_restore} && !id(loads_enabled);'
-                then:
-                  - globals.set: {id: loads_enabled, value: 'true'}
-
-            - if:
-                condition:
-                  lambda: 'return id(batt_ctrl_pct).state < ${ctrl_battery_critical_pct} && !id(critical_sleep_armed);'
-                then:
-                  - globals.set: {id: critical_sleep_armed, value: 'true'}
-                  - delay: 10s
-                  - deep_sleep.enter:
-                      id: deep_sleep_control
-                      sleep_duration: ${deep_sleep_duration}
-
-            - if:
-                condition:
-                  lambda: 'return id(loads_enabled) && id(greenhouse_temp).has_state();'
+                # TIER 1: NORMAL OPERATION Recovery (> 65%)
+                condition: { lambda: 'return id(batt_ctrl_pct).state > ${ctrl_batt_restore_pct};' }
                 then:
                   - if:
-                      condition: {lambda: 'return id(greenhouse_temp).state > ${mister_on_temp};'}
-                      then: {switch.turn_on: GHSw1}
-                  - if:
-                      condition: {lambda: 'return id(greenhouse_temp).state < ${mister_off_temp};'}
-                      then: {switch.turn_off: GHSw1}
-                  - if:
-                      condition: {lambda: 'return id(greenhouse_temp).state > ${fan_on_temp};'}
-                      then: {switch.turn_on: GHSw2}
-                  - if:
-                      condition: {lambda: 'return id(greenhouse_temp).state < ${fan_off_temp};'}
-                      then: {switch.turn_off: GHSw2}
+                      condition: { lambda: 'return !id(loads_enabled);' }
+                      then: { logger.log: "NORMAL POWER: Enabling automation." }
+                  - globals.set: { id: loads_enabled, value: "true" }
 
-            - delay: !lambda 'return id(temp_interval).state * 60000;'
+      # Step 4: Temperature Control (Only if Battery OK)
+      - if:
+          condition: { lambda: 'return id(loads_enabled) && id(greenhouse_temp).has_state();' }
+          then:
+            - if:
+                condition: { lambda: 'return id(greenhouse_temp).state >= ${fan_on_temp};' }
+                then: { switch.turn_on: GHSw2 }
+                else:
+                  - if: { condition: { lambda: 'return id(greenhouse_temp).state <= ${fan_off_temp};' }, then: { switch.turn_off: GHSw2 } }
+            
+            - if:
+                condition: { lambda: 'return id(greenhouse_temp).state >= ${mister_on_temp};' }
+                then: { switch.turn_on: GHSw1 }
+                else:
+                  - if: { condition: { lambda: 'return id(greenhouse_temp).state <= ${mister_off_temp};' }, then: { switch.turn_off: GHSw1 } }
+
+      - logger.log: "Logic cycle finished."
+
+      # Step 5: Schedule next iteration
+      - delay: !lambda |-
+          float min = id(temp_interval).state;
+          if (std::isnan(min) || min < 1.0) min = 5.0;
+          return (uint32_t)(min * 60000);
+      - script.execute: force_logic_update

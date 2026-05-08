@@ -4,7 +4,7 @@ A robust, low-power ESP32-based greenhouse automation system for Home Assistant 
 
 ## Features
 
-- **Fully Autonomous Operation** — Continues to run all automation even without WiFi or Home Assistant connection
+- **Fully Autonomous Operation** — All automation continues to run even without WiFi or Home Assistant
 - **Dynamic Update Interval** — Adjustable from 1 to 60 minutes via Home Assistant
 - **Smart Battery Management** with hysteresis
 - **Temperature Automation**:
@@ -12,8 +12,8 @@ A robust, low-power ESP32-based greenhouse automation system for Home Assistant 
   - Fan turns **ON** above 80°F, **OFF** below 78°F
 - **Battery Priority** — Low battery conditions override temperature controls
 - **All Temperatures in °F** — Greenhouse air + MCU core temperature
-- **WiFi Fallback** — Automatic Access Point mode if main WiFi fails
-- **Power Optimizations** — Low power mode, fast connect, deep sleep support
+- **WiFi Fallback** — Automatic Access Point if main WiFi fails
+- **Security Focused** — OTA button hidden from web interface
 
 ## Hardware Pinout
 
@@ -27,18 +27,17 @@ A robust, low-power ESP32-based greenhouse automation system for Home Assistant 
 
 ## Offline / Autonomous Operation
 
-The controller is designed to work **independently** of WiFi and Home Assistant:
+The controller operates **independently** of WiFi and Home Assistant:
 
-- All battery protection logic and temperature-based automation (Mister & Fan) continue to function normally if WiFi is unavailable or connection to Home Assistant is lost.
+- Battery protection and temperature automation (Mister & Fan) continue to function normally if WiFi or HA is unavailable.
 - If the main WiFi network is down, the device automatically creates a fallback Access Point named **`Greenhouse-ESP32`** (password: `greenhouse123`).
-- You can connect to this AP to access the web interface and monitor the device.
 
 ## Configuration
 
-All key parameters are at the top of `esphome-greenhouse.yaml` under `substitutions`:
+All important settings are located at the top of `esphome-greenhouse.yaml` under `substitutions`:
 
 - Temperature thresholds (`mister_on_temp`, `fan_on_temp`, etc.)
-- Battery thresholds and hysteresis
+- Battery thresholds and hysteresis values
 - Voltage calibration multipliers
 - Update interval, deep sleep duration, etc.
 
@@ -62,7 +61,7 @@ All key parameters are at the top of `esphome-greenhouse.yaml` under `substituti
 **Text Sensors:**
 - Clock
 - Chip Revision
-- Detected Temperature Sensors
+- **Greenhouse Temp Sensor Address** (shows actual 1-Wire address)
 
 ## Control Logic Priority
 
@@ -72,6 +71,7 @@ All key parameters are at the top of `esphome-greenhouse.yaml` under `substituti
 ## Diagnostics
 
 - Web server is available briefly on boot and when controller battery is healthy
+- **OTA updates are disabled in the web UI** for improved security (use ESPHome CLI or HA to update)
 - Check ESPHome logs for battery and temperature control messages
 - Battery readings stabilize after ~60 seconds due to averaging filter
 
